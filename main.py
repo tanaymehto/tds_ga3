@@ -87,20 +87,33 @@ def parse_json(s):
 async def root():
     return {"ok": True, "email": config.EMAIL}
 # ================= Q2: /answer-image =================
-def normalize_answer(ans):
+def normalize_answer(ans, question=""):
     """Clean a vision answer so it matches the grader's expected string.
     Numeric answers: strip currency/commas/units, keep the bare number.
     Text answers (e.g. a category name): keep as-is, trimmed."""
     s = str(ans).strip()
     if not s:
         return s
-    # If it looks numeric once symbols/commas/spaces are removed, return the number.
+    numeric_question = bool(re.search(
+        r"\b(total|sum|average|mean|median|max|min|largest|smallest|highest|lowest|count|how many|number of|amount|price|cost|percent|percentage|ratio|difference|value)\b",
+        question.lower(),
+    ))
+    # If the question expects a number, prefer the first numeric token anywhere in the answer.
+    if numeric_question:
+        cleaned = re.sub(r"[,\s]", "", s)
+        cleaned = re.sub(r"[₹$€£%]", "", cleaned)
+        m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+        if m:
+            num = m.group(0)
+            if "." in num:
+                num = num.rstrip("0").rstrip(".")
+            return num
+    # Otherwise, be conservative and only strip to a number when the whole answer is numeric-ish.
     cleaned = re.sub(r"[,\s]", "", s)
     cleaned = re.sub(r"[₹$€£%]", "", cleaned)
     m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
     if m and re.fullmatch(r"[^\dA-Za-z]*-?\d[\d,.\s₹$€£%]*", s.strip()):
         num = m.group(0)
-        # drop trailing ".0" so 240.0 -> 240 (matches integer-style expected values)
         if "." in num:
             num = num.rstrip("0").rstrip(".")
         return num
@@ -159,11 +172,32 @@ async def answer_image(request: Request):
         messages[0]["content"][1]["image_url"]["url"] = f"data:{image_mime};base64,{img_b64}"
         raw_out = await chat(messages, model=config.VISION_MODEL, max_tokens=1200)
         out = parse_json(raw_out)
-        ans = normalize_answer(out.get("answer", ""))
+        if isinstance(out, dict):
+            ans = normalize_answer(out.get("answer", ""), question)
+        else:
+            ans = normalize_answer(out, question)
         if not ans:
             fallback = re.search(r'"answer"\s*:\s*"?([^"\n\r}]+)', raw_out)
             if fallback:
-                ans = normalize_answer(fallback.group(1))
+                ans = normalize_answer(fallback.group(1), question)
+        if not ans:
+            retry_messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": (
+                        "Read the image and answer the question with only the final answer. "
+                        "If numeric, output only the bare number. If text, output the exact text. "
+                        f"Question: {question}"
+                    )},
+                    {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}", "detail": "high"}},
+                ],
+            }]
+            retry_out = await chat(retry_messages, model=config.VISION_MODEL, max_tokens=600)
+            retry_parsed = parse_json(retry_out)
+            if isinstance(retry_parsed, dict):
+                ans = normalize_answer(retry_parsed.get("answer", ""), question)
+            else:
+                ans = normalize_answer(retry_parsed, question)
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
