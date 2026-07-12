@@ -106,11 +106,31 @@ def normalize_answer(ans):
         return num
     return s
 
+
+def detect_image_mime(image_bytes):
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    return "image/png"
+
 @app.post("/answer-image")
 async def answer_image(request: Request):
     body = await request.json()
     img_b64 = body.get("image_base64", "")
     question = body.get("question", "")
+    image_bytes = b""
+    try:
+        image_bytes = base64.b64decode(img_b64)
+    except Exception:
+        image_bytes = b""
+    image_mime = detect_image_mime(image_bytes)
     messages = [{
         "role": "user",
         "content": [
@@ -136,8 +156,14 @@ async def answer_image(request: Request):
     }]
     try:
         # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=1200))
+        messages[0]["content"][1]["image_url"]["url"] = f"data:{image_mime};base64,{img_b64}"
+        raw_out = await chat(messages, model=config.VISION_MODEL, max_tokens=1200)
+        out = parse_json(raw_out)
         ans = normalize_answer(out.get("answer", ""))
+        if not ans:
+            fallback = re.search(r'"answer"\s*:\s*"?([^"\n\r}]+)', raw_out)
+            if fallback:
+                ans = normalize_answer(fallback.group(1))
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
