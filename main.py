@@ -141,6 +141,11 @@ async def answer_image(request: Request):
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
+
+
+@app.post("/answer-image/answer-image")
+async def answer_image_alias(request: Request):
+    return await answer_image(request)
 # ================= Q3 + Q7: /extract =================
 @app.post("/extract")
 async def extract(request: Request):
@@ -210,6 +215,11 @@ async def extract(request: Request):
         out["priority"] = "normal"
     return out
 
+
+@app.post("/extract/extract")
+async def extract_alias(request: Request):
+    return await extract(request)
+
 # ================= Q4: /dynamic-extract =================
 def coerce(value, typ):
     """Force the LLM output to the exact JSON type the schema asked for.
@@ -262,6 +272,11 @@ async def dynamic_extract(request: Request):
         out = {}
     # enforce exact key set AND correct types
     return {k: coerce(out.get(k, None), schema[k]) for k in keys}
+
+
+@app.post("/dynamic-extract/dynamic-extract")
+async def dynamic_extract_alias(request: Request):
+    return await dynamic_extract(request)
 
 # ================= Q6: /answer-audio =================
 last_debug_info = {}
@@ -654,6 +669,11 @@ async def answer_audio(request: Request):
         del audio_history[0]
     return out
 
+
+@app.post("/answer-audio/answer-audio")
+async def answer_audio_alias(request: Request):
+    return await answer_audio(request)
+
 # ================= Q8: /rank =================
 @app.post("/rank")
 async def rank(request: Request):
@@ -675,6 +695,11 @@ async def rank(request: Request):
         return dot/(na*nb) if na and nb else 0.0
     scored = sorted(range(len(cand)), key=lambda i: -cos(q, cand[i]))
     return {"ranking": scored[:3]}
+
+
+@app.post("/rank/rank")
+async def rank_alias(request: Request):
+    return await rank(request)
 
 # ================= Q9: /solve =================
 @app.post("/solve")
@@ -706,3 +731,8 @@ async def solve(request: Request):
     except Exception as e:
         return {"reasoning": "Could not solve reliably: " + str(e)[:120].ljust(80),
                 "answer": 0}
+
+
+@app.post("/solve/solve")
+async def solve_alias(request: Request):
+    return await solve(request)
