@@ -164,27 +164,43 @@ async def answer_image(request: Request):
         ans_a = normalize_answer(direct_a, question)
         ans_b = normalize_answer(direct_b, question)
 
+        ocr_prompt = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    "Transcribe all visible text, labels, numbers, and totals that could "
+                    "matter for answering the question. Do not summarize or interpret. "
+                    f"Question: {question}"
+                )},
+                {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}", "detail": "high"}},
+            ],
+        }]
+        transcript = await chat(ocr_prompt, model=config.VISION_MODEL, max_tokens=500, force_json=False)
+        answer_prompt = (
+            "Use the OCR text to answer the question. If numeric, return only the number. "
+            "If text, return the exact text. No explanation.\n\n"
+            f"QUESTION: {question}\n\nOCR TEXT:\n{transcript}"
+        )
+        ocr_answer = normalize_answer(
+            await chat([{"role": "user", "content": answer_prompt}], model=config.TEXT_MODEL, max_tokens=120, force_json=False),
+            question,
+        )
+
         if ans_a and ans_a == ans_b:
-            ans = ans_a
+            direct_consensus = ans_a
         else:
-            ocr_prompt = [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": (
-                        "Transcribe all visible text, labels, numbers, and totals that could "
-                        "matter for answering the question. Do not summarize or interpret. "
-                        f"Question: {question}"
-                    )},
-                    {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}", "detail": "high"}},
-                ],
-            }]
-            transcript = await chat(ocr_prompt, model=config.VISION_MODEL, max_tokens=500, force_json=False)
-            answer_prompt = (
-                "Use the OCR text to answer the question. If numeric, return only the number. "
-                "If text, return the exact text. No explanation.\n\n"
-                f"QUESTION: {question}\n\nOCR TEXT:\n{transcript}"
-            )
-            ans = normalize_answer(await chat([{"role": "user", "content": answer_prompt}], model=config.TEXT_MODEL, max_tokens=120, force_json=False), question)
+            direct_consensus = ""
+
+        numeric_question = bool(re.search(
+            r"\b(total|sum|average|mean|median|max|min|largest|smallest|highest|lowest|count|how many|number of|amount|price|cost|percent|percentage|ratio|difference|value)\b",
+            question.lower(),
+        ))
+        if numeric_question:
+            ans = ocr_answer or direct_consensus or ans_a or ans_b
+            if direct_consensus and ocr_answer and direct_consensus == ocr_answer:
+                ans = direct_consensus
+        else:
+            ans = direct_consensus or ocr_answer or ans_a or ans_b
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
