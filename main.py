@@ -148,56 +148,43 @@ async def answer_image(request: Request):
         "role": "user",
         "content": [
             {"type": "text", "text":
-                "You read charts, receipts, tables, invoices and pie charts EXACTLY.\n"
-                "Work in steps in a 'work' field, then give the final 'answer':\n"
-                "1. TRANSCRIBE every relevant label and number you see, one by one "
-                "(e.g. each bar's value, each receipt line, each table cell). Read "
-                "digits carefully; do not round or estimate.\n"
-                "2. If the question needs arithmetic (sum of all bars, grand total, "
-                "max/min of a column, total including tax), compute it step by step "
-                "and DOUBLE-CHECK the sum by re-adding.\n"
-                "3. Final 'answer': if NUMERIC, output ONLY the bare number — no "
-                "currency symbol, no thousands separators, no units, no words. Keep "
-                "decimals exactly as shown (e.g. a money total 4089.35 stays 4089.35). "
-                "If TEXT (e.g. the largest pie category), output it EXACTLY as written "
-                "in the image.\n"
-                "Return JSON: {\"work\": \"...\", \"answer\": \"...\"}.\n"
+                "Answer the question from the image as accurately as possible. "
+                "If the answer is numeric, return only the bare number. "
+                "If it is text, return the exact text from the image. "
+                "Do not add any explanation.\n"
                 f"Question: {question}"},
             {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
+             "image_url": {"url": f"data:{image_mime};base64,{img_b64}", "detail": "high"}},
         ],
     }]
     try:
-        # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        messages[0]["content"][1]["image_url"]["url"] = f"data:{image_mime};base64,{img_b64}"
-        raw_out = await chat(messages, model=config.VISION_MODEL, max_tokens=1200)
-        out = parse_json(raw_out)
-        if isinstance(out, dict):
-            ans = normalize_answer(out.get("answer", ""), question)
+        # Use two independent direct-answer passes first; if they disagree, fall back to OCR.
+        direct_a = await chat(messages, model=config.VISION_MODEL, max_tokens=120, force_json=False)
+        direct_b = await chat(messages, model=config.VISION_MODEL, max_tokens=120, force_json=False)
+        ans_a = normalize_answer(direct_a, question)
+        ans_b = normalize_answer(direct_b, question)
+
+        if ans_a and ans_a == ans_b:
+            ans = ans_a
         else:
-            ans = normalize_answer(out, question)
-        if not ans:
-            fallback = re.search(r'"answer"\s*:\s*"?([^"\n\r}]+)', raw_out)
-            if fallback:
-                ans = normalize_answer(fallback.group(1), question)
-        if not ans:
-            retry_messages = [{
+            ocr_prompt = [{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": (
-                        "Read the image and answer the question with only the final answer. "
-                        "If numeric, output only the bare number. If text, output the exact text. "
+                        "Transcribe all visible text, labels, numbers, and totals that could "
+                        "matter for answering the question. Do not summarize or interpret. "
                         f"Question: {question}"
                     )},
                     {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{img_b64}", "detail": "high"}},
                 ],
             }]
-            retry_out = await chat(retry_messages, model=config.VISION_MODEL, max_tokens=600)
-            retry_parsed = parse_json(retry_out)
-            if isinstance(retry_parsed, dict):
-                ans = normalize_answer(retry_parsed.get("answer", ""), question)
-            else:
-                ans = normalize_answer(retry_parsed, question)
+            transcript = await chat(ocr_prompt, model=config.VISION_MODEL, max_tokens=500, force_json=False)
+            answer_prompt = (
+                "Use the OCR text to answer the question. If numeric, return only the number. "
+                "If text, return the exact text. No explanation.\n\n"
+                f"QUESTION: {question}\n\nOCR TEXT:\n{transcript}"
+            )
+            ans = normalize_answer(await chat([{"role": "user", "content": answer_prompt}], model=config.TEXT_MODEL, max_tokens=120, force_json=False), question)
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
